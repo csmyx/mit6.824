@@ -6,8 +6,11 @@ package mr
 // remember to capitalize all names.
 //
 
-import "os"
-import "strconv"
+import (
+	"errors"
+	"os"
+	"strconv"
+)
 
 //
 // example to show how to declare the arguments
@@ -23,7 +26,42 @@ type ExampleReply struct {
 }
 
 // Add your RPC definitions here.
+const (
+	NoType int = iota
+	MapType
+	ReduceType
+)
 
+type RPCArgs struct {
+	X int
+}
+
+type RPCReply struct {
+	TaskType int
+	TaskID   int
+
+	/* use for Map task */
+	Filename string
+	Content  []byte
+	Nreduce  int
+
+	/* use for Reduce task */
+	Nmap int
+}
+
+var (
+	BadNotify       error = errors.New("Bad Notify")
+	BadMapNotify    error = errors.New("Bad Map IDX")
+	BadReduceNotify error = errors.New("Bad Reduce IDX")
+)
+
+type NotifyArgs struct {
+	NotifyType int
+	NotifyID   int
+}
+
+type NotifyReply struct {
+}
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.
