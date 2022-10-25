@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/rpc"
 	"os"
+	"sync/atomic"
 	"time"
 )
 
@@ -35,7 +36,7 @@ type Coordinator struct {
 	reduceNotifyChs []chan struct{}
 	reduceDoneChs   []chan struct{}
 
-	done chan struct{}
+	done atomic.Value
 }
 
 func (c *Coordinator) assginMapTask(task *mapTaskT, args *TaskArgs, reply *TaskReply) error {
@@ -168,11 +169,7 @@ func (c *Coordinator) Done() bool {
 	ret := false
 
 	// Your code here.
-	if _, ok := <-c.done; !ok {
-		ret = true
-	} else {
-		c.done <- struct{}{}
-	}
+	ret = c.done.Load().(bool)
 
 	return ret
 }
@@ -189,6 +186,8 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		nMap:    len(files),
 		nReduce: nReduce,
 	}
+	c.done.Store(false)
+
 	c.mapTaskQ = make(chan *mapTaskT, c.nMap)
 	c.mapNotifyChs = make([]chan struct{}, c.nMap)
 	c.mapDoneChs = make([]chan struct{}, c.nMap)
@@ -211,10 +210,6 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		c.reduceDoneChs[i] = make(chan struct{})
 	}
 
-	c.done = make(chan struct{}, 1)
-	c.done <- struct{}{}
-	c.server()
-
 	go func() {
 		for i := 0; i < c.nMap; i++ {
 			<-c.mapDoneChs[i]
@@ -224,7 +219,9 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 			<-c.reduceDoneChs[i]
 		}
 		close(c.reduceTaskQ)
-		close(c.done) // indicate all tasks has been done
+		c.done.Store(true)
 	}()
+
+	c.server()
 	return &c
 }
