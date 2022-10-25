@@ -29,7 +29,6 @@ type TaskType int
 
 const (
 	TaskDone TaskType = iota
-	TaskPending
 	MapType
 	ReduceType
 )
@@ -50,9 +49,9 @@ type TaskReply struct {
 }
 
 type NotifyArgs struct {
-	NotifyType TaskType
-	NotifyID   int
-	NotifyErr  string
+	TaskType
+	TaskID    int
+	NotifyErr string
 }
 
 type NotifyReply struct {

@@ -9,7 +9,6 @@ import (
 	"net/rpc"
 	"os"
 	"sort"
-	"time"
 )
 
 //
@@ -153,21 +152,20 @@ func Worker(mapf func(string, string) []KeyValue,
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
 	for {
-		taskReply, err := getTask()
+		reply, err := getTask()
 		// log.Println("process Type:", taskReply.TaskType)
 		if err != nil {
 			log.Fatalf("err: %v\n", err)
 		}
-
 		args := NotifyArgs{
-			NotifyType: taskReply.TaskType,
-			NotifyID:   taskReply.TaskID,
+			TaskType: reply.TaskType,
+			TaskID:   reply.TaskID,
 		}
-
-		switch taskReply.TaskType {
+		switch reply.TaskType {
 		case MapType:
-			if err := MapWorker(mapf, taskReply); err != nil {
+			if err := MapWorker(mapf, reply); err != nil {
 				args.NotifyErr = err.Error()
+				log.Println("[MapWorker err]", err)
 			}
 			notifyReply, err := notify(&args)
 			if err != nil {
@@ -176,14 +174,15 @@ func Worker(mapf func(string, string) []KeyValue,
 			if notifyReply.Err != "" {
 				log.Println(notifyReply.Err)
 			}
-			log.Println("[notified Map]", taskReply.TaskID)
+			log.Println("[notified Map]", reply.TaskID)
 		case ReduceType:
-			if err := ReduceWorker(reducef, taskReply); err != nil {
+			if err := ReduceWorker(reducef, reply); err != nil {
 				args.NotifyErr = err.Error()
+				log.Println("[ReduceWorker err]", err)
 			}
 			args := NotifyArgs{
-				NotifyType: ReduceType,
-				NotifyID:   taskReply.TaskID,
+				TaskType: ReduceType,
+				TaskID:   reply.TaskID,
 			}
 			notifyReply, err := notify(&args)
 			if err != nil {
@@ -192,9 +191,7 @@ func Worker(mapf func(string, string) []KeyValue,
 			if notifyReply.Err != "" {
 				log.Println(notifyReply.Err)
 			}
-			log.Println("[notified Reduce]", taskReply.TaskID)
-		case TaskPending:
-			time.Sleep(3 * time.Second)
+			log.Println("[notified Reduce]", reply.TaskID)
 		case TaskDone:
 			log.Println("Client: All Task finished, Exit")
 			goto End
@@ -238,7 +235,7 @@ func CallExample() {
 // returns false if something goes wrong.
 //
 func call(rpcname string, args interface{}, reply interface{}) error {
-	// log.Println("call rpc:", rpcname)
+	log.Println("call rpc:", rpcname)
 	// c, err := rpc.DialHTTP("tcp", "127.0.0.1"+":1234")
 	sockname := coordinatorSock()
 	c, err := rpc.DialHTTP("unix", sockname)
