@@ -20,7 +20,9 @@ import (
 )
 
 func main() {
-	// log.SetFlags(log.Llongfile)
+	log.SetFlags(log.Llongfile)
+	devNull, _ := os.Open(os.DevNull)
+	log.SetOutput(devNull)
 	if len(os.Args) != 2 {
 		fmt.Fprintf(os.Stderr, "Usage: mrworker xxx.so\n")
 		os.Exit(1)

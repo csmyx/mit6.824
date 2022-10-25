@@ -1,7 +1,8 @@
 package mr
 
 import (
-	"io/ioutil"
+	"errors"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -11,157 +12,173 @@ import (
 	"time"
 )
 
+type taskState int
+
+const (
+	assignable taskState = iota
+	processing
+	finished
+)
+
+type mapTask struct {
+	taskState
+	filename string
+	nBucket  int
+}
+
+type reduceTask struct {
+	taskState
+}
+
 type Coordinator struct {
 	// Your definitions here.
-	/* use for Map stack */
-	files         []string
-	unMapIdx      int
-	startedMapSet sync.Map
-	failedMapSet  map[int]struct{}
-	mapChs        []chan struct{}
-	mapTimeout    time.Duration
+	files   []string
+	timeout time.Duration
+	mtx     sync.Mutex
 
-	/* use for Reduce stack */
-	nReduce          int
-	unReduceIdx      int
-	startedReduceSet map[int]struct{}
-	reduceChs        []chan struct{}
-	failedReduceSet  map[int]struct{}
-	reduceTimeout    time.Duration
+	/* use for Map tasks */
+	nMap         int
+	nMapFinished int
+	mapTasks     []*mapTask
+	curMapIdx    int
 
-	mtx sync.Mutex
+	/* use for Reduce tasks */
+	nReduce         int
+	nReduceFinished int
+	reduceTasks     []*reduceTask
+	curReduceIdx    int
 }
 
-func readFile(filename string) ([]byte, error) {
-	file, err := os.Open(filename)
-	defer func() {
-		if err != nil {
-			file.Close()
-		}
-	}()
-	if err != nil {
-		log.Printf("cannot open %v", filename)
-		return nil, err
-	}
-	content, err := ioutil.ReadAll(file)
-	if err != nil {
-		log.Printf("cannot read %v", filename)
-		return nil, err
-	}
-	return content, nil
-}
+func (c *Coordinator) assginMapTask(idx int, args *TaskArgs, reply *TaskReply) error {
+	log.Println("[assgin Map]", idx)
 
-func (c *Coordinator) assginMapWork(idx int, args *RPCArgs, reply *RPCReply) error {
-	c.startedMapSet[idx] = struct{}{} // 标记当前任务开始
-	filename := c.files[idx]
-	content, err := readFile(filename)
-	if err != nil {
-		return err
+	curTask := c.mapTasks[idx]
+	curTask.taskState = processing
+	*reply = TaskReply{
+		TaskType: MapType,
+		TaskID:   idx,
+		Filename: curTask.filename,
+		Nreduce:  curTask.nBucket,
 	}
-	defer func() {
-		if err != nil {
-			delete(c.startedMapSet, idx) // 标记当前任务结束
-			return
-		}
-		go func() {
-			select {
-			case <-time.After(c.mapTimeout):
-				c.mtx.Lock()
-				c.failedMapSet[idx] = struct{}{}
-
-				c.mtx.Unlock()
-			case <-c.mapChs[idx]:
-				// do nothing
-			}
-			c.mtx.Lock()
-			delete(c.startedMapSet, idx) // 标记当前任务结束
-			c.mtx.Unlock()
-		}()
-	}()
-	reply.TaskType = MapType
-	reply.TaskID = idx
-	reply.Filename = filename
-	reply.Content = content
-	reply.Nreduce = c.nReduce
 	return nil
 }
 
-func (c *Coordinator) assginReduceWork(idx int, args *RPCArgs, reply *RPCReply) error {
-	c.startedReduceSet[idx] = struct{}{} // 标记当前任务开始
-	defer func() {
-		go func() {
-			select {
-			case <-time.After(c.reduceTimeout):
-				c.mtx.Lock()
-				c.failedReduceSet[idx] = struct{}{}
-				c.mtx.Unlock()
-			case <-c.reduceChs[idx]:
-				// do nothing
-			}
-			c.mtx.Lock()
-			delete(c.startedReduceSet, idx) // 标记当前任务结束
-			c.mtx.Unlock()
-		}()
-	}()
-	reply.TaskType = ReduceType
-	reply.TaskID = idx
-	reply.Nmap = len(c.files)
+func (c *Coordinator) assginReduceTask(idx int, args *TaskArgs, reply *TaskReply) error {
+	log.Println("[assign Reduce]", idx)
+
+	curTask := c.reduceTasks[idx]
+	curTask.taskState = processing
+	*reply = TaskReply{
+		TaskType: ReduceType,
+		TaskID:   idx,
+		Nmap:     len(c.files),
+	}
 	return nil
 }
 
 // Your code here -- RPC handlers for the worker to call.
-func (c *Coordinator) UnstartedTask(args *RPCArgs, reply *RPCReply) error {
+func (c *Coordinator) AssignTask(args *TaskArgs, reply *TaskReply) error {
 	c.mtx.Lock()
 	defer c.mtx.Unlock()
-	if c.unMapIdx < len(c.files) { // Map task
-		err := c.assginMapWork(c.unMapIdx, args, reply)
-		c.unMapIdx++
-		return err
-	} else if len(c.failedMapSet) != 0 {
-		var idx int
-		for k := range c.failedMapSet {
-			idx = k
-			break
+	if c.nMapFinished < c.nMap {
+		i := c.curMapIdx
+		for j := 0; j < c.nMap; j++ {
+			if c.mapTasks[i].taskState == assignable {
+				break
+			}
+			i = (i + 1) % c.nMap
 		}
-		delete(c.failedMapSet, idx)
-		return c.assginMapWork(idx, args, reply)
-	} else if c.unReduceIdx != c.nReduce { // Reduce task
-		err := c.assginReduceWork(c.unReduceIdx, args, reply)
-		c.unReduceIdx++
-		return err
-	} else if len(c.failedReduceSet) != 0 {
-		var idx int
-		for k := range c.failedReduceSet {
-			idx = k
-			break
+		if c.mapTasks[i].taskState == assignable {
+			c.assginMapTask(i, args, reply)
+			c.curMapIdx = (i + 1) % c.nMap
+			go func() {
+				t := time.NewTimer(c.timeout)
+				// log.Println("timer begin:", i)
+				defer t.Stop()
+				<-t.C
+				c.mtx.Lock()
+				if c.mapTasks[i].taskState != finished {
+					c.mapTasks[i].taskState = assignable
+					log.Println("[timeout Map]", i)
+				}
+				c.mtx.Unlock()
+			}()
+		} else { // wait for processing task
+			*reply = TaskReply{
+				TaskType: TaskPending,
+			}
 		}
-		delete(c.failedReduceSet, idx)
-		return c.assginReduceWork(idx, args, reply)
+	} else if c.nReduceFinished < c.nReduce {
+		i := c.curReduceIdx
+		for j := 0; j < c.nReduce; j++ {
+			if c.reduceTasks[i].taskState == assignable {
+				break
+			}
+			i = (i + 1) % c.nReduce
+		}
+		if c.reduceTasks[i].taskState == assignable {
+			c.assginReduceTask(i, args, reply)
+			c.curReduceIdx = (i + 1) % c.nReduce
+			go func() {
+				t := time.NewTimer(c.timeout)
+				defer t.Stop()
+				<-t.C
+				c.mtx.Lock()
+				if c.reduceTasks[i].taskState != finished {
+					c.reduceTasks[i].taskState = assignable
+					log.Println("[timeout Reduce]", i)
+				}
+				c.mtx.Unlock()
+			}()
+		} else { // wait for processing task
+			*reply = TaskReply{
+				TaskType: TaskPending,
+			}
+		}
 	} else {
-		reply.TaskType = NoType
-		return nil
+		*reply = TaskReply{
+			TaskType: TaskDone,
+		}
 	}
+	return nil
 }
 
-func (c *Coordinator) NotifyFinish(args *NotifyArgs, reply *NotifyReply) error {
+func (c *Coordinator) NotifyTask(args *NotifyArgs, reply *NotifyReply) error {
+	if args.NotifyErr != "" {
+		log.Println("notify task error")
+		return nil
+	}
 	c.mtx.Lock()
 	defer c.mtx.Unlock()
 	if args.NotifyType == MapType {
 		idx := args.NotifyID
-		if _, ok := c.startedMapSet[idx]; !ok {
-			return BadMapNotify
+		if c.mapTasks[idx].taskState == finished {
+			reply.Err = errors.New("repeat notify finished map task").Error()
+		} else if c.mapTasks[idx].taskState == assignable {
+			reply.Err = errors.New("notify assignable map task").Error()
+		} else {
+			c.mapTasks[idx].taskState = finished
+			c.nMapFinished++
+			log.Println("[finished Map]", idx)
 		}
-		c.mapChs[idx] <- struct{}{} // 标记任务已完成
-		return nil
 	} else if args.NotifyType == ReduceType {
 		idx := args.NotifyID
-		if _, ok := c.startedReduceSet[idx]; !ok {
-			return BadReduceNotify
+		if c.reduceTasks[idx].taskState == finished {
+			reply.Err = errors.New("repeat notify finished reduce task").Error()
+		} else if c.reduceTasks[idx].taskState == assignable {
+			reply.Err = errors.New("notify assignable reduce task").Error()
+		} else {
+			c.reduceTasks[idx].taskState = finished
+			c.nReduceFinished++
+			log.Println("[finished Reduce]", idx)
 		}
-		c.reduceChs[idx] <- struct{}{} // 标记任务已完成
-		return nil
+	} else {
+		reply.Err = errors.New("notify bad task type").Error()
 	}
-	return BadNotify
+	if reply.Err != "" {
+		fmt.Println("notify reply.err", reply.Err)
+	}
+	return nil
 }
 
 //
@@ -197,6 +214,9 @@ func (c *Coordinator) Done() bool {
 	ret := false
 
 	// Your code here.
+	c.mtx.Lock()
+	ret = c.nReduceFinished == c.nReduce
+	c.mtx.Unlock()
 
 	return ret
 }
@@ -207,21 +227,26 @@ func (c *Coordinator) Done() bool {
 // nReduce is the number of reduce tasks to use.
 //
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
-	c := Coordinator{}
-
-	// Your code here.
-	c.files = make([]string, len(files))
-	copy(c.files, files)
-	c.startedMapSet = make(map[int]struct{})
-	c.failedMapSet = make(map[int]struct{})
-	c.mapChs = make([]chan struct{}, len(files))
-	c.mapTimeout = time.Second * 10
-
-	c.nReduce = nReduce
-	c.startedReduceSet = make(map[int]struct{})
-	c.failedReduceSet = make(map[int]struct{})
-	c.reduceChs = make([]chan struct{}, c.nReduce)
-	c.reduceTimeout = time.Second * 10
+	c := Coordinator{
+		files:   files,
+		timeout: time.Second * 10,
+		nMap:    len(files),
+		nReduce: nReduce,
+	}
+	c.mapTasks = make([]*mapTask, c.nMap)
+	for i := 0; i < c.nMap; i++ {
+		c.mapTasks[i] = &mapTask{
+			taskState: assignable,
+			filename:  files[i],
+			nBucket:   nReduce,
+		}
+	}
+	c.reduceTasks = make([]*reduceTask, c.nReduce)
+	for i := 0; i < c.nReduce; i++ {
+		c.reduceTasks[i] = &reduceTask{
+			taskState: assignable,
+		}
+	}
 
 	c.server()
 	return &c

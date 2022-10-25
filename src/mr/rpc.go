@@ -7,7 +7,6 @@ package mr
 //
 
 import (
-	"errors"
 	"os"
 	"strconv"
 )
@@ -26,41 +25,38 @@ type ExampleReply struct {
 }
 
 // Add your RPC definitions here.
+type TaskType int
+
 const (
-	NoType int = iota
+	TaskDone TaskType = iota
+	TaskPending
 	MapType
 	ReduceType
 )
 
-type RPCArgs struct {
-	X int
+type TaskArgs struct {
 }
 
-type RPCReply struct {
-	TaskType int
-	TaskID   int
+type TaskReply struct {
+	TaskType
+	TaskID int
 
 	/* use for Map task */
 	Filename string
-	Content  []byte
 	Nreduce  int
 
 	/* use for Reduce task */
 	Nmap int
 }
 
-var (
-	BadNotify       error = errors.New("Bad Notify")
-	BadMapNotify    error = errors.New("Bad Map IDX")
-	BadReduceNotify error = errors.New("Bad Reduce IDX")
-)
-
 type NotifyArgs struct {
-	NotifyType int
+	NotifyType TaskType
 	NotifyID   int
+	NotifyErr  string
 }
 
 type NotifyReply struct {
+	Err string
 }
 
 // Cook up a unique-ish UNIX-domain socket name

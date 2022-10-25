@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"io/ioutil"
 	"log"
 	"net/rpc"
 	"os"
@@ -37,35 +38,41 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
-func genIntermFile(mapIdx, reduceIdx int, bucket []KeyValue) error {
+func creatInterFile(mapIdx, reduceIdx int, bucket []KeyValue) error {
 	filename := fmt.Sprintf("mr-%d-%d", mapIdx, reduceIdx)
-	log.Printf("Filename: %s\n", filename)
-	file, err := os.Create(filename)
+	tmpFile, err := ioutil.TempFile("", filename+"-tmp-*")
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if err != nil {
-			file.Close()
-		}
-	}()
 	for _, kv := range bucket {
-		enc := json.NewEncoder(file)
+		enc := json.NewEncoder(tmpFile)
 		if err := enc.Encode(&kv); err != nil {
 			log.Fatalf("encode err: %v\n", err)
 		}
 	}
+	os.Rename(tmpFile.Name(), filename)
+	tmpFile.Close()
+	// log.Printf("Filename: %s\n", filename)
 	return nil
 }
 
-func MapWorker(mapf func(string, string) []KeyValue, reply *RPCReply) {
-	if reply.TaskType != MapType {
-		log.Fatalf("Task Type error.\n")
+func deleteInterFile(mapIdx, reduceIdx int) error {
+	filename := fmt.Sprintf("mr-%d-%d", mapIdx, reduceIdx)
+	if err := os.Remove(filename); err != nil {
+		return err
 	}
-	log.Println("Task Type: MapTask.")
+	return nil
+}
+
+func MapWorker(mapf func(string, string) []KeyValue, reply *TaskReply) error {
+	log.Println("[begin Map]", reply.TaskID)
 	mapID := reply.TaskID
 	nReduce := reply.Nreduce
-	kvs := mapf(reply.Filename, string(reply.Content))
+	content, err := os.ReadFile(reply.Filename)
+	if err != nil {
+		return err
+	}
+	kvs := mapf(reply.Filename, string(content))
 	buckets := make([][]KeyValue, nReduce)
 	for _, kv := range kvs {
 		// log.Println(kv.Key, kv.Value)
@@ -73,17 +80,16 @@ func MapWorker(mapf func(string, string) []KeyValue, reply *RPCReply) {
 		buckets[idx] = append(buckets[idx], kv)
 	}
 	for idx, bucket := range buckets {
-		if err := genIntermFile(mapID, idx, bucket); err != nil {
-			log.Fatalf("err: %v, mapIdx: %d, reduceIdx: %d\n", err, reply.TaskID, idx)
+		if err := creatInterFile(mapID, idx, bucket); err != nil {
+			return err
+			// log.Fatalf("err: %v, mapIdx: %d, reduceIdx: %d\n", err, reply.TaskID, idx)
 		}
 	}
+	return nil
 }
 
-func ReduceWorker(reducef func(string, []string) string, reply *RPCReply) {
-	if reply.TaskType != ReduceType {
-		log.Fatalf("Task Type error.\n")
-	}
-	log.Println("Task Type: ReduceTask.")
+func ReduceWorker(reducef func(string, []string) string, reply *TaskReply) error {
+	log.Println("[begin Reduce]", reply.TaskID)
 	reduceID := reply.TaskID
 	nMap := reply.Nmap
 
@@ -92,7 +98,7 @@ func ReduceWorker(reducef func(string, []string) string, reply *RPCReply) {
 		filename := fmt.Sprintf("mr-%d-%d", idx, reduceID)
 		file, err := os.Open(filename)
 		if err != nil {
-			log.Fatalf("file Open err: %v", err)
+			return err
 		}
 		dec := json.NewDecoder(file)
 		for {
@@ -104,16 +110,11 @@ func ReduceWorker(reducef func(string, []string) string, reply *RPCReply) {
 		}
 	}
 	ofilename := fmt.Sprintf("mr-out-%d", reduceID)
-	log.Printf("Output Filename: %s\n", ofilename)
-	ofile, err := os.Create(ofilename)
+	// log.Printf("Output Filename: %s\n", ofilename)
+	ofile, err := ioutil.TempFile("", ofilename+"-tmp-*")
 	if err != nil {
-		log.Fatalf("Creat %s fail, err:%v\n", ofilename, err)
+		return err
 	}
-	defer func() {
-		if err != nil {
-			ofile.Close()
-		}
-	}()
 	sort.Sort(ByKey(kvs))
 	i := 0
 	for i < len(kvs) {
@@ -131,6 +132,14 @@ func ReduceWorker(reducef func(string, []string) string, reply *RPCReply) {
 
 		i = j
 	}
+	os.Rename(ofile.Name(), ofilename)
+	ofile.Close()
+	for i := 0; i < nMap; i++ {
+		if err := deleteInterFile(i, reduceID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 //
@@ -144,19 +153,54 @@ func Worker(mapf func(string, string) []KeyValue,
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
 	for {
-		reply, err := getTask()
+		taskReply, err := getTask()
+		// log.Println("process Type:", taskReply.TaskType)
 		if err != nil {
 			log.Fatalf("err: %v\n", err)
 		}
-		if reply.TaskType == MapType {
-			MapWorker(mapf, reply)
-		} else if reply.TaskType == ReduceType {
-			// id := reply.ReduceID
-			ReduceWorker(reducef, reply)
-		} else { // NoType
+
+		args := NotifyArgs{
+			NotifyType: taskReply.TaskType,
+			NotifyID:   taskReply.TaskID,
+		}
+
+		switch taskReply.TaskType {
+		case MapType:
+			if err := MapWorker(mapf, taskReply); err != nil {
+				args.NotifyErr = err.Error()
+			}
+			notifyReply, err := notify(&args)
+			if err != nil {
+				log.Printf("notify err: %v\n", err)
+			}
+			if notifyReply.Err != "" {
+				log.Println(notifyReply.Err)
+			}
+			log.Println("[notified Map]", taskReply.TaskID)
+		case ReduceType:
+			if err := ReduceWorker(reducef, taskReply); err != nil {
+				args.NotifyErr = err.Error()
+			}
+			args := NotifyArgs{
+				NotifyType: ReduceType,
+				NotifyID:   taskReply.TaskID,
+			}
+			notifyReply, err := notify(&args)
+			if err != nil {
+				log.Printf("notify err: %v\n", err)
+			}
+			if notifyReply.Err != "" {
+				log.Println(notifyReply.Err)
+			}
+			log.Println("[notified Reduce]", taskReply.TaskID)
+		case TaskPending:
 			time.Sleep(3 * time.Second)
+		case TaskDone:
+			log.Println("Client: All Task finished, Exit")
+			goto End
 		}
 	}
+End:
 }
 
 //
@@ -194,6 +238,7 @@ func CallExample() {
 // returns false if something goes wrong.
 //
 func call(rpcname string, args interface{}, reply interface{}) error {
+	// log.Println("call rpc:", rpcname)
 	// c, err := rpc.DialHTTP("tcp", "127.0.0.1"+":1234")
 	sockname := coordinatorSock()
 	c, err := rpc.DialHTTP("unix", sockname)
@@ -206,10 +251,21 @@ func call(rpcname string, args interface{}, reply interface{}) error {
 	return err
 }
 
-func getTask() (*RPCReply, error) {
-	args := RPCArgs{}
-	reply := RPCReply{}
-	err := call("Coordinator.UnstartedTask", &args, &reply)
+func getTask() (*TaskReply, error) {
+	args := TaskArgs{}
+	reply := TaskReply{}
+	err := call("Coordinator.AssignTask", &args, &reply)
+	if err != nil {
+		log.Printf("call failed!\n")
+		return nil, err
+	}
+	// log.Printf("reply.Content: %v\n", string(reply.Content))
+	return &reply, nil
+}
+
+func notify(args *NotifyArgs) (*NotifyReply, error) {
+	reply := NotifyReply{}
+	err := call("Coordinator.NotifyTask", &args, &reply)
 	if err != nil {
 		log.Printf("call failed!\n")
 		return nil, err

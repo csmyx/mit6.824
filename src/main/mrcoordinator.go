@@ -20,12 +20,14 @@ import (
 
 func main() {
 	log.SetFlags(log.Llongfile)
+	devNull, _ := os.Open(os.DevNull)
+	log.SetOutput(devNull)
 	if len(os.Args) < 2 {
 		fmt.Fprintf(os.Stderr, "Usage: mrcoordinator inputfiles...\n")
 		os.Exit(1)
 	}
 
-	m := mr.MakeCoordinator(os.Args[1:], 3)
+	m := mr.MakeCoordinator(os.Args[1:], 10)
 	for m.Done() == false {
 		time.Sleep(time.Second)
 	}
