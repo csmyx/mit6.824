@@ -434,9 +434,9 @@ func (rf *Raft) ticker() {
 						wg.Wait()
 
 						rf.mu.Lock()
-						defer rf.mu.Unlock() // [bug] cause next loop with rf.mu locked
 
 						if rf.state == follower { // indecate has discovered current leader or new term, end the election
+							rf.mu.Unlock()
 							return
 						}
 						var voteCnt int
@@ -472,6 +472,7 @@ func (rf *Raft) ticker() {
 								}
 							}()
 						}
+						rf.mu.Unlock()
 						// try another new election
 					}
 				}()
