@@ -221,10 +221,11 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-
-	log.Println("peer", rf.me, "process VoteRPC", rf.votedFor,
-		"term:", rf.currentTerm, args.LastLogTerm,
-		"index:", len(rf.log), args.LastLogIndex)
+	log.Println("VoteRPC ", "peer:", rf.me, "votefor:", rf.votedFor, "curterm:", rf.currentTerm,
+		"lastLogTerm:", rf.log[len(rf.log)-1].Term,
+		"arg.Term:", args.LastLogTerm,
+		"lastLogIndex:", len(rf.log)-1,
+		"arg.index:", args.LastLogIndex)
 
 	reply.Term = rf.currentTerm
 	if args.Term < rf.currentTerm {
@@ -274,6 +275,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// }
 	rf.state = follower // If AppendEntries RPC received from new leader: convert to follower
 	rf.resetTimeout()
+	log.Println("【Hearbeat】", args.LeaderId, "->", rf.me, "sender term:", args.Term)
 
 	// 2. Reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm
 	if len(rf.log) <= args.PrevLogIndex || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
@@ -439,15 +441,17 @@ func (rf *Raft) ticker() {
 							}
 							if reply.VoteGranted {
 								votes[i] = true
-								log.Println("voteGranted:", i)
+								log.Println("voteGranted:", i, "->", rf.me, "term", voteTerm)
 							} else {
-								log.Println("voteFailed:", i)
+								log.Println("voteFailed:", i, "->", rf.me, "term", voteTerm)
 							}
 						}
 					}(i)
 				}
 				wg.Wait()
 
+				// 不应该阻塞等待所有vote RPC返回，否则即使已经获得votes of majority或已经超时，也得等到所有RPC返回才进行结果处理，
+				// 从而导致别的follower也超时，此轮vote无效
 				rf.mu.Lock()
 				defer rf.mu.Unlock()
 
@@ -463,7 +467,7 @@ func (rf *Raft) ticker() {
 						voteCnt++
 					}
 				}
-				log.Println("voteCnt:", voteCnt)
+				log.Println("【voter result】", rf.me, "-> leader of term", voteTerm, "voteCnt:", voteCnt)
 				if rf.state == candidate && voteCnt > len(rf.peers)/2 {
 					rf.state = leader // if votes received from majority of servers: become leader
 					args := &AppendEntriesArgs{
@@ -528,7 +532,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// Your initialization code here (2A, 2B, 2C).
 	rf.state = follower
 	rf.votedFor = -1                          // indicate null
-	rf.log = append(rf.log, NewEntry(0, nil)) // append placeholder, the first valid log term and index are both 1
+	rf.log = append(rf.log, NewEntry(0, nil)) // append placeholder, the first valid log index is 1
 	rf.lowBoundTimeout = 1000000 * 400
 	rf.upBoundTimeout = 1000000 * 800
 	rf.resetTimeout()
