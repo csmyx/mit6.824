@@ -242,8 +242,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	// 2. If votedFor is null or candidateId, and candidate's log is at least as up-to-date as receiver’s log, grant vote
 	if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
-		// [bug] should use lastLogTerm instead of rf.currentTerm to determine whehter it's up-to-date
-		if args.LastLogTerm > rf.currentTerm || args.LastLogTerm == rf.currentTerm && args.LastLogIndex >= len(rf.log) {
+		lastLogTerm := rf.log[len(rf.log)-1].Term
+		lastLogIndex := len(rf.log) - 1
+		if args.LastLogTerm > lastLogTerm || args.LastLogTerm == lastLogTerm && args.LastLogIndex >= lastLogIndex {
 			reply.VoteGranted = true
 			rf.votedFor = args.CandidateId
 			rf.resetTimeout()
