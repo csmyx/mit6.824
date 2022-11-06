@@ -11,3 +11,10 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	}
 	return
 }
+
+func DPrintln(format string, a ...interface{}) (n int, err error) {
+	if Debug {
+		log.Println(a...)
+	}
+	return
+}

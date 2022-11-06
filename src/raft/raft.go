@@ -221,7 +221,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	log.Println("VoteRPC ", "peer:", rf.me, "votefor:", rf.votedFor, "curterm:", rf.currentTerm,
+	DPrintln("VoteRPC ", "peer:", rf.me, "votefor:", rf.votedFor, "curterm:", rf.currentTerm,
 		"lastLogTerm:", rf.log[len(rf.log)-1].Term,
 		"arg.Term:", args.LastLogTerm,
 		"lastLogIndex:", len(rf.log)-1,
@@ -275,7 +275,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// }
 	rf.state = follower // If AppendEntries RPC received from new leader: convert to follower
 	rf.resetTimeout()
-	log.Println("【Hearbeat】", args.LeaderId, "->", rf.me, "sender term:", args.Term)
+	DPrintln("【Hearbeat】", args.LeaderId, "->", rf.me, "sender term:", args.Term)
 
 	// 2. Reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm
 	if len(rf.log) <= args.PrevLogIndex || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
@@ -404,7 +404,7 @@ func (rf *Raft) ticker() {
 			rf.currentTerm++    // 1. Increment currentTerm
 			rf.votedFor = rf.me // 2. Vote for self
 			rf.resetTimeout()   // 3. Reset election timer
-			log.Println("peer", rf.me, "-> candidate", "term:", rf.currentTerm)
+			DPrintln("peer", rf.me, "-> candidate", "term:", rf.currentTerm)
 
 			voteTerm := rf.currentTerm // record the Term when it just started election
 			args := &RequestVoteArgs{
@@ -417,15 +417,13 @@ func (rf *Raft) ticker() {
 				votes := make([]bool, len(rf.peers))
 				votes[rf.me] = true
 
-				var wg sync.WaitGroup
+				var voteCnt int32 = 1
 				for i := 0; i < len(rf.peers); i++ {
 					if i == rf.me {
 						continue
 					}
 					reply := &RequestVoteReply{}
-					wg.Add(1)
 					go func(i int) {
-						defer wg.Done()
 						if ok := rf.sendRequestVote(i, args, reply); ok {
 							rf.mu.Lock()
 							defer rf.mu.Unlock()
@@ -441,60 +439,50 @@ func (rf *Raft) ticker() {
 							}
 							if reply.VoteGranted {
 								votes[i] = true
-								log.Println("voteGranted:", i, "->", rf.me, "term", voteTerm)
+								atomic.AddInt32(&voteCnt, 1)
+								DPrintln("voteGranted:", i, "->", rf.me, "term", voteTerm)
 							} else {
-								log.Println("voteFailed:", i, "->", rf.me, "term", voteTerm)
+								DPrintln("voteFailed:", i, "->", rf.me, "term", voteTerm)
 							}
 						}
 					}(i)
 				}
-				wg.Wait()
 
-				// 不应该阻塞等待所有vote RPC返回，否则即使已经获得votes of majority或已经超时，也得等到所有RPC返回才进行结果处理，
-				// 从而导致别的follower也超时，此轮vote无效
 				rf.mu.Lock()
-				defer rf.mu.Unlock()
-
-				if rf.currentTerm != voteTerm {
-					return
-				}
-				if rf.state == follower { // indecate has discovered current leader or new term, end the election
-					return
-				}
-				var voteCnt int
-				for _, vote := range votes { // since wg has finished, it's safe to access votes
-					if vote {
-						voteCnt++
-					}
-				}
-				log.Println("【voter result】", rf.me, "-> leader of term", voteTerm, "voteCnt:", voteCnt)
-				if rf.state == candidate && voteCnt > len(rf.peers)/2 {
-					rf.state = leader // if votes received from majority of servers: become leader
-					args := &AppendEntriesArgs{
-						Term:     rf.currentTerm,
-						LeaderId: rf.me,
-					}
-					go func() {
-						for {
-							for i := 0; i < len(rf.peers); i++ {
-								if i == rf.me {
-									continue
-								}
-								reply := &AppendEntriesReply{}
-								go func(i int) {
-									rf.sendAppendEntries(i, args, reply)
-								}(i)
-							}
-							time.Sleep(time.Millisecond * 250)
-							rf.mu.Lock()
-							if rf.state != leader {
-								rf.mu.Unlock()
-								return
-							}
-							rf.mu.Unlock()
+				for rf.currentTerm == voteTerm && rf.state == candidate {
+					if int(atomic.LoadInt32(&voteCnt)) > len(rf.peers)/2 {
+						DPrintln("【voter result】", rf.me, "-> leader of term", voteTerm, "voteCnt:", atomic.LoadInt32(&voteCnt))
+						rf.state = leader // if votes received from majority of servers: become leader
+						args := &AppendEntriesArgs{
+							Term:     rf.currentTerm,
+							LeaderId: rf.me,
 						}
-					}()
+						go func() {
+							for {
+								for i := 0; i < len(rf.peers); i++ {
+									if i == rf.me {
+										continue
+									}
+									reply := &AppendEntriesReply{}
+									go func(i int) {
+										rf.sendAppendEntries(i, args, reply)
+									}(i)
+								}
+								time.Sleep(time.Millisecond * 250)
+								rf.mu.Lock()
+								if rf.state != leader {
+									rf.mu.Unlock()
+									return
+								}
+								rf.mu.Unlock()
+							}
+						}()
+					}
+					rf.mu.Unlock()
+					time.Sleep(time.Millisecond * 20)
+					rf.mu.Lock()
 				}
+				rf.mu.Unlock()
 			}()
 		}
 		rf.mu.Unlock()
