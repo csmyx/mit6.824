@@ -399,66 +399,65 @@ func (rf *Raft) ticker() {
 		// time.Sleep().
 		time.Sleep(time.Millisecond * 20)
 		rf.mu.Lock()
+		defer rf.mu.Unlock()
 		if rf.state != leader && rf.hasTimeouted() {
-			rf.state = candidate
-			rf.currentTerm++    // 1. Increment currentTerm
-			rf.votedFor = rf.me // 2. Vote for self
-			rf.resetTimeout()   // 3. Reset election timer
-			DPrintln("peer", rf.me, "-> candidate", "term:", rf.currentTerm)
-
-			go rf.requestVotes() // 4. Send RequestVote RPCs to all other servers
+			rf.startNewElection()
 		}
-		rf.mu.Unlock()
 	}
 }
 
-func (rf *Raft) requestVotes() {
-	var voteCnt int = 1
-	voteTerm := rf.currentTerm // record the Term before all sendRequestVoteRPCs
-	args := &RequestVoteArgs{
-		Term:         voteTerm,
-		CandidateId:  rf.me,
-		LastLogIndex: len(rf.log),
-		LastLogTerm:  rf.log[len(rf.log)-1].Term,
-	}
-	for i := 0; i < len(rf.peers); i++ {
-		if i == rf.me {
-			continue
+func (rf *Raft) startNewElection() {
+	rf.state = candidate
+	rf.currentTerm++    // 1. Increment currentTerm
+	rf.votedFor = rf.me // 2. Vote for self
+	rf.resetTimeout()   // 3. Reset election timer
+	DPrintln("peer", rf.me, "-> candidate", "term:", rf.currentTerm)
+	go func() {
+		var voteCnt int = 1
+		voteTerm := rf.currentTerm // record the Term before all sendRequestVoteRPCs
+		args := &RequestVoteArgs{
+			Term:         voteTerm,
+			CandidateId:  rf.me,
+			LastLogIndex: len(rf.log),
+			LastLogTerm:  rf.log[len(rf.log)-1].Term,
 		}
-		reply := &RequestVoteReply{}
-		go func(i int) {
-			if ok := rf.sendRequestVote(i, args, reply); ok {
-				rf.mu.Lock()
-				defer rf.mu.Unlock()
-
-				if rf.state != candidate {
-					DPrintln("state changed to: [", rf.state, "] in vote reply for candidate [", rf.me, "] from ", i, " in term ", voteTerm)
-					return
-				}
-				if reply.Term > voteTerm { // discover new term, revert to follower, and need to update currentTerm
-					DPrintln("receive new term: [", reply.Term, "] in vote reply for candidate [", rf.me, "] from ", i, " in term ", voteTerm)
-					rf.convertToFollower(reply.Term)
-					return
-				}
-
-				if reply.VoteGranted {
-					DPrintln("voteGranted:", i, "->", rf.me, "term ", voteTerm)
-					voteCnt += 1
-					if voteCnt > (len(rf.peers)+1)/2 {
-						DPrintln("【voter result】", rf.me, "-> leader of term", voteTerm, "voteCnt:", voteCnt)
-						rf.convertToLeader()
-					}
-				} else {
-					DPrintln("voteFailed:", i, "->", rf.me, "term ", voteTerm)
-				}
+		for i := 0; i < len(rf.peers); i++ {
+			if i == rf.me {
+				continue
 			}
-		}(i)
-	}
+			reply := &RequestVoteReply{}
+			go func(i int) {
+				if ok := rf.sendRequestVote(i, args, reply); ok {
+					rf.mu.Lock()
+					defer rf.mu.Unlock()
+
+					if rf.state != candidate {
+						DPrintln("state changed to: [", rf.state, "] in vote reply for candidate [", rf.me, "] from ", i, " in term ", voteTerm)
+						return
+					}
+					if reply.Term > voteTerm { // discover new term, revert to follower, and need to update currentTerm
+						DPrintln("receive new term: [", reply.Term, "] in vote reply for candidate [", rf.me, "] from ", i, " in term ", voteTerm)
+						rf.convertToFollower(reply.Term)
+						return
+					}
+
+					if reply.VoteGranted {
+						DPrintln("voteGranted:", i, "->", rf.me, "term ", voteTerm)
+						voteCnt += 1
+						if voteCnt > (len(rf.peers)+1)/2 {
+							DPrintln("【voter result】", rf.me, "-> leader of term", voteTerm, "voteCnt:", voteCnt)
+							rf.convertToLeader()
+						}
+					} else {
+						DPrintln("voteFailed:", i, "->", rf.me, "term ", voteTerm)
+					}
+				}
+			}(i)
+		}
+	}()
 }
 
 func (rf *Raft) convertToFollower(term int) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	rf.state = follower
 	rf.currentTerm = term
 	rf.votedFor = -1
@@ -466,13 +465,11 @@ func (rf *Raft) convertToFollower(term int) {
 }
 
 func (rf *Raft) convertToLeader() {
-	rf.mu.Lock()
 	rf.state = leader // if votes received from majority of servers: become leader
 	args := &AppendEntriesArgs{
 		Term:     rf.currentTerm,
 		LeaderId: rf.me,
 	}
-	rf.mu.Unlock()
 
 	go func() {
 		for {
