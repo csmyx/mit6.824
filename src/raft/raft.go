@@ -406,87 +406,94 @@ func (rf *Raft) ticker() {
 			rf.resetTimeout()   // 3. Reset election timer
 			DPrintln("peer", rf.me, "-> candidate", "term:", rf.currentTerm)
 
-			voteTerm := rf.currentTerm // record the Term when it just started election
-			args := &RequestVoteArgs{
-				Term:         voteTerm,
-				CandidateId:  rf.me,
-				LastLogIndex: len(rf.log),
-				LastLogTerm:  rf.log[len(rf.log)-1].Term,
-			}
-			go func() { // 4. Send RequestVote RPCs to all other servers
-				votes := make([]bool, len(rf.peers))
-				votes[rf.me] = true
-
-				var voteCnt int32 = 1
-				for i := 0; i < len(rf.peers); i++ {
-					if i == rf.me {
-						continue
-					}
-					reply := &RequestVoteReply{}
-					go func(i int) {
-						if ok := rf.sendRequestVote(i, args, reply); ok {
-							rf.mu.Lock()
-							defer rf.mu.Unlock()
-
-							if rf.state == follower { // indecate has discovered current leader (received AppendEntries)
-								return
-							} else if rf.state == candidate && reply.Term > rf.currentTerm { // discover new term, revert to follower
-								rf.currentTerm = reply.Term
-								rf.state = follower
-								rf.votedFor = -1
-								rf.resetTimeout()
-								return
-							}
-							if reply.VoteGranted {
-								votes[i] = true
-								atomic.AddInt32(&voteCnt, 1)
-								DPrintln("voteGranted:", i, "->", rf.me, "term", voteTerm)
-							} else {
-								DPrintln("voteFailed:", i, "->", rf.me, "term", voteTerm)
-							}
-						}
-					}(i)
-				}
-
-				rf.mu.Lock()
-				for rf.currentTerm == voteTerm && rf.state == candidate {
-					if int(atomic.LoadInt32(&voteCnt)) > len(rf.peers)/2 {
-						DPrintln("【voter result】", rf.me, "-> leader of term", voteTerm, "voteCnt:", atomic.LoadInt32(&voteCnt))
-						rf.state = leader // if votes received from majority of servers: become leader
-						args := &AppendEntriesArgs{
-							Term:     rf.currentTerm,
-							LeaderId: rf.me,
-						}
-						go func() {
-							for {
-								for i := 0; i < len(rf.peers); i++ {
-									if i == rf.me {
-										continue
-									}
-									reply := &AppendEntriesReply{}
-									go func(i int) {
-										rf.sendAppendEntries(i, args, reply)
-									}(i)
-								}
-								time.Sleep(time.Millisecond * 250)
-								rf.mu.Lock()
-								if rf.state != leader {
-									rf.mu.Unlock()
-									return
-								}
-								rf.mu.Unlock()
-							}
-						}()
-					}
-					rf.mu.Unlock()
-					time.Sleep(time.Millisecond * 20)
-					rf.mu.Lock()
-				}
-				rf.mu.Unlock()
-			}()
+			go rf.requestVotes() // 4. Send RequestVote RPCs to all other servers
 		}
 		rf.mu.Unlock()
 	}
+}
+
+func (rf *Raft) requestVotes() {
+	var voteCnt int = 1
+	voteTerm := rf.currentTerm // record the Term before all sendRequestVoteRPCs
+	args := &RequestVoteArgs{
+		Term:         voteTerm,
+		CandidateId:  rf.me,
+		LastLogIndex: len(rf.log),
+		LastLogTerm:  rf.log[len(rf.log)-1].Term,
+	}
+	for i := 0; i < len(rf.peers); i++ {
+		if i == rf.me {
+			continue
+		}
+		reply := &RequestVoteReply{}
+		go func(i int) {
+			if ok := rf.sendRequestVote(i, args, reply); ok {
+				rf.mu.Lock()
+				defer rf.mu.Unlock()
+
+				if rf.state != candidate {
+					DPrintln("state changed to: [", rf.state, "] in vote reply for candidate [", rf.me, "] from ", i, " in term ", voteTerm)
+					return
+				}
+				if reply.Term > voteTerm { // discover new term, revert to follower, and need to update currentTerm
+					DPrintln("receive new term: [", reply.Term, "] in vote reply for candidate [", rf.me, "] from ", i, " in term ", voteTerm)
+					rf.convertToFollower(reply.Term)
+					return
+				}
+
+				if reply.VoteGranted {
+					DPrintln("voteGranted:", i, "->", rf.me, "term ", voteTerm)
+					voteCnt += 1
+					if voteCnt > (len(rf.peers)+1)/2 {
+						DPrintln("【voter result】", rf.me, "-> leader of term", voteTerm, "voteCnt:", voteCnt)
+						rf.convertToLeader()
+					}
+				} else {
+					DPrintln("voteFailed:", i, "->", rf.me, "term ", voteTerm)
+				}
+			}
+		}(i)
+	}
+}
+
+func (rf *Raft) convertToFollower(term int) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	rf.state = follower
+	rf.currentTerm = term
+	rf.votedFor = -1
+	rf.resetTimeout()
+}
+
+func (rf *Raft) convertToLeader() {
+	rf.mu.Lock()
+	rf.state = leader // if votes received from majority of servers: become leader
+	args := &AppendEntriesArgs{
+		Term:     rf.currentTerm,
+		LeaderId: rf.me,
+	}
+	rf.mu.Unlock()
+
+	go func() {
+		for {
+			for i := 0; i < len(rf.peers); i++ {
+				if i == rf.me {
+					continue
+				}
+				reply := &AppendEntriesReply{}
+				go func(i int) {
+					rf.sendAppendEntries(i, args, reply)
+				}(i)
+			}
+			time.Sleep(time.Millisecond * 250)
+			rf.mu.Lock()
+			if rf.state != leader {
+				rf.mu.Unlock()
+				return
+			}
+			rf.mu.Unlock()
+		}
+	}()
 }
 
 func (rf *Raft) resetTimeout() {
