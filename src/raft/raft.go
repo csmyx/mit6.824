@@ -399,62 +399,60 @@ func (rf *Raft) ticker() {
 		// time.Sleep().
 		time.Sleep(time.Millisecond * 20)
 		rf.mu.Lock()
-		defer rf.mu.Unlock()
 		if rf.state != leader && rf.hasTimeouted() {
 			rf.startNewElection()
 		}
+		rf.mu.Unlock()
 	}
 }
 
 func (rf *Raft) startNewElection() {
-	rf.state = candidate
-	rf.currentTerm++    // 1. Increment currentTerm
-	rf.votedFor = rf.me // 2. Vote for self
-	rf.resetTimeout()   // 3. Reset election timer
 	DPrintln("peer", rf.me, "-> candidate", "term:", rf.currentTerm)
-	go func() {
-		var voteCnt int = 1
-		voteTerm := rf.currentTerm // record the Term before all sendRequestVoteRPCs
-		args := &RequestVoteArgs{
-			Term:         voteTerm,
-			CandidateId:  rf.me,
-			LastLogIndex: len(rf.log),
-			LastLogTerm:  rf.log[len(rf.log)-1].Term,
+	rf.state = candidate
+	rf.currentTerm++           // 1. Increment currentTerm
+	rf.votedFor = rf.me        // 2. Vote for self
+	rf.resetTimeout()          // 3. Reset election timer
+	voteTerm := rf.currentTerm // record the Term before all sendRequestVoteRPCs
+	args := &RequestVoteArgs{
+		Term:         voteTerm,
+		CandidateId:  rf.me,
+		LastLogIndex: len(rf.log),
+		LastLogTerm:  rf.log[len(rf.log)-1].Term,
+	}
+	var voteCnt int = 1
+	for i := 0; i < len(rf.peers); i++ {
+		if i == rf.me {
+			continue
 		}
-		for i := 0; i < len(rf.peers); i++ {
-			if i == rf.me {
-				continue
-			}
-			reply := &RequestVoteReply{}
-			go func(i int) {
-				if ok := rf.sendRequestVote(i, args, reply); ok {
-					rf.mu.Lock()
-					defer rf.mu.Unlock()
+		reply := &RequestVoteReply{}
+		go func(i int) {
+			if ok := rf.sendRequestVote(i, args, reply); ok {
+				rf.mu.Lock()
+				defer rf.mu.Unlock()
 
-					if rf.state != candidate {
-						DPrintln("state changed to: [", rf.state, "] in vote reply for candidate [", rf.me, "] from ", i, " in term ", voteTerm)
-						return
-					}
-					if reply.Term > voteTerm { // discover new term, revert to follower, and need to update currentTerm
-						DPrintln("receive new term: [", reply.Term, "] in vote reply for candidate [", rf.me, "] from ", i, " in term ", voteTerm)
-						rf.convertToFollower(reply.Term)
-						return
-					}
-
-					if reply.VoteGranted {
-						DPrintln("voteGranted:", i, "->", rf.me, "term ", voteTerm)
-						voteCnt += 1
-						if voteCnt > (len(rf.peers)+1)/2 {
-							DPrintln("【voter result】", rf.me, "-> leader of term", voteTerm, "voteCnt:", voteCnt)
-							rf.convertToLeader()
-						}
-					} else {
-						DPrintln("voteFailed:", i, "->", rf.me, "term ", voteTerm)
-					}
+				if rf.state != candidate {
+					DPrintln("state changed to: [", rf.state, "] in vote reply for candidate [", rf.me, "] from ", i, " in term ", voteTerm)
+					return
 				}
-			}(i)
-		}
-	}()
+				if reply.Term > voteTerm { // discover new term, revert to follower, and need to update currentTerm
+					DPrintln("receive new term: [", reply.Term, "] in vote reply for candidate [", rf.me, "] from ", i, " in term ", voteTerm)
+					rf.convertToFollower(reply.Term)
+					return
+				}
+
+				if reply.VoteGranted {
+					DPrintln("voteGranted:", i, "->", rf.me, "term ", voteTerm)
+					voteCnt++
+					if voteCnt > len(rf.peers)/2 {
+						DPrintln("【voter result】", rf.me, "-> leader of term", voteTerm, "voteCnt:", voteCnt)
+						rf.convertToLeader()
+					}
+				} else {
+					DPrintln("voteFailed:", i, "->", rf.me, "term ", voteTerm)
+				}
+			}
+		}(i)
+	}
 }
 
 func (rf *Raft) convertToFollower(term int) {
