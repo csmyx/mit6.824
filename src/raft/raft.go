@@ -297,11 +297,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 	rf.log = append(rf.log, args.Entries[j:]...) // 4. Append any new entries not already in the log
 	DPrintln(rf.me, ": [append log]", "leader:", args.LeaderId, "send term:", args.Term, "append log:", args.Entries[j:], "log len:", len(rf.log))
-	var logs []Entry
-	for _, x := range rf.log {
-		logs = append(logs, *x)
-	}
-	DPrintln("logs:", logs)
+	// var logs []Entry
+	// for _, x := range rf.log {
+	// 	logs = append(logs, *x)
+	// }
+	// DPrintln("logs:", logs)
 
 	// 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 	if args.LeaderCommit > rf.commitIndex {
@@ -318,7 +318,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			Command:      rf.log[rf.lastApplied].Command,
 			CommandIndex: rf.lastApplied,
 		}
-		DPrintln(rf.me, ": [apply new commit]", "term:", rf.currentTerm, "commitIndex:", rf.commitIndex, "command:", rf.log[rf.lastApplied].Command)
+		// DPrintln(rf.me, ": [apply new commit]", "term:", rf.currentTerm, "commitIndex:", rf.commitIndex, "command:", rf.log[rf.lastApplied].Command)
 	}
 }
 
@@ -513,10 +513,10 @@ func (rf *Raft) convertToLeader() {
 				rf.mu.Unlock()
 				reply := &AppendEntriesReply{}
 				go func(i int) {
-					DPrintln("[AE]", rf.me, "->", i, "term:", rf.currentTerm, "nextIndex:", args.PrevLogIndex+1, "matchIndex:", rf.matchIndex[i], "entry:", args.Entries)
 					if ok := rf.sendAppendEntries(i, args, reply); ok {
 						rf.mu.Lock()
 						defer rf.mu.Unlock()
+						DPrintln("[AE]", rf.me, "->", i, "term:", rf.currentTerm, "nextIndex:", args.PrevLogIndex+1, "matchIndex:", rf.matchIndex[i], "entry:", args.Entries)
 						if rf.state != leader || rf.currentTerm != args.Term {
 							return
 						}
@@ -554,7 +554,7 @@ func (rf *Raft) convertToLeader() {
 											Command:      rf.log[rf.lastApplied].Command,
 											CommandIndex: rf.lastApplied,
 										}
-										DPrintln(rf.me, ": [apply new commit]", "term:", rf.currentTerm, "commitIndex:", rf.commitIndex, "command:", rf.log[rf.lastApplied].Command)
+										// DPrintln(rf.me, ": [apply new commit]", "term:", rf.currentTerm, "commitIndex:", rf.commitIndex, "command:", rf.log[rf.lastApplied].Command)
 									}
 								}
 							} else {
