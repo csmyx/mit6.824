@@ -276,7 +276,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// }
 	rf.state = follower // If AppendEntries RPC received from new leader: convert to follower
 	rf.resetTimeout()
-	DPrintln("[Hearbeat]", args.LeaderId, "->", rf.me, "sender term:", args.Term)
+	// DPrintln("[Hearbeat]", args.LeaderId, "->", rf.me, "sender term:", args.Term)
 
 	// 2. Reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm
 	if len(rf.log) <= args.PrevLogIndex || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
@@ -296,7 +296,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		j++
 	}
 	rf.log = append(rf.log, args.Entries[j:]...) // 4. Append any new entries not already in the log
-	DPrintln("[append log]", args.LeaderId, "->", rf.me, "sender term:", args.Term, "append entries:", args.Entries[j:], "log:", rf.log)
+	DPrintln(rf.me, ": [append log]", "leader:", args.LeaderId, "send term:", args.Term, "append log:", args.Entries[j:], "log len:", len(rf.log))
+	var logs []Entry
+	for _, x := range rf.log {
+		logs = append(logs, *x)
+	}
+	DPrintln("logs:", logs)
 
 	// 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 	if args.LeaderCommit > rf.commitIndex {
@@ -313,6 +318,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			Command:      rf.log[rf.lastApplied].Command,
 			CommandIndex: rf.lastApplied,
 		}
+		DPrintln(rf.me, ": [apply new commit]", "term:", rf.currentTerm, "commitIndex:", rf.commitIndex, "command:", rf.log[rf.lastApplied].Command)
 	}
 }
 
@@ -386,7 +392,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader = rf.state == leader
 	if isLeader {
 		rf.log = append(rf.log, NewEntry(term, command))
-		DPrintln("[start] leader: ", rf.me, "term:", term, "index:", index)
+		DPrintln("[start command] leader: ", rf.me, "term:", term, "index:", index)
 	}
 	return index, term, isLeader
 }
@@ -430,7 +436,7 @@ func (rf *Raft) ticker() {
 }
 
 func (rf *Raft) startNewElection() {
-	DPrintln("peer", rf.me, "-> candidate", "term:", rf.currentTerm)
+	DPrintln("peer", rf.me, "-> candidate", "of term:", rf.currentTerm+1)
 	rf.state = candidate
 	rf.currentTerm++           // 1. Increment currentTerm
 	rf.votedFor = rf.me        // 2. Vote for self
@@ -523,12 +529,12 @@ func (rf *Raft) convertToLeader() {
 							if reply.Success {
 								rf.nextIndex[i] = args.PrevLogIndex + len(args.Entries) + 1
 								rf.matchIndex[i] = rf.nextIndex[i] - 1
-								DPrintln("[AE reply]", rf.me, "->", i, "term:", rf.currentTerm, "nextIndex:", rf.nextIndex[i], "matchIndex:", rf.matchIndex[i])
+								DPrintln("[AE reply]", rf.me, "<-", i, "term:", rf.currentTerm, "nextIndex:", rf.nextIndex[i], "matchIndex:", rf.matchIndex[i])
 
 								commitedIndex := rf.commitIndex
 								for i := commitedIndex + 1; i < len(rf.log); i++ {
 									if rf.log[i].Term == rf.currentTerm {
-										count := 0
+										count := 1
 										for j := 0; j < len(rf.peers); j++ {
 											if rf.matchIndex[j] >= i {
 												count++
@@ -541,7 +547,6 @@ func (rf *Raft) convertToLeader() {
 								}
 								if rf.commitIndex != commitedIndex {
 									rf.commitIndex = commitedIndex
-									DPrintln("[commit]", rf.me, "term:", rf.currentTerm, "commitIndex:", rf.commitIndex)
 									for rf.lastApplied < rf.commitIndex {
 										rf.lastApplied++
 										rf.applyCh <- ApplyMsg{
@@ -549,6 +554,7 @@ func (rf *Raft) convertToLeader() {
 											Command:      rf.log[rf.lastApplied].Command,
 											CommandIndex: rf.lastApplied,
 										}
+										DPrintln(rf.me, ": [apply new commit]", "term:", rf.currentTerm, "commitIndex:", rf.commitIndex, "command:", rf.log[rf.lastApplied].Command)
 									}
 								}
 							} else {
