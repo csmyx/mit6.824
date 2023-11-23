@@ -98,6 +98,19 @@ const (
 	leader
 )
 
+func (st State) String() string {
+	switch st {
+	case follower:
+		return "Follower"
+	case candidate:
+		return "Candidate"
+	case leader:
+		return "Leader"
+	default:
+		return "unknown"
+	}
+}
+
 type Entry struct {
 	Term    int
 	Command interface{}
@@ -222,7 +235,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	DPrintln("RequestVote ", "peer:", rf.me, "votefor:", rf.votedFor, "curterm:", rf.currentTerm,
+	DPrintln(rf.me, "[Get RV RPC]", "current votefor:", rf.votedFor, "curterm:", rf.currentTerm,
 		"lastLogTerm:", rf.log[len(rf.log)-1].Term,
 		"arg.Term:", args.LastLogTerm,
 		"lastLogIndex:", len(rf.log)-1,
@@ -231,6 +244,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	reply.Term = rf.currentTerm
 	if args.Term < rf.currentTerm {
 		reply.VoteGranted = false // 1. Reply false if term < currentTerm
+		DPrintln(rf.me, "[Get RV RPC]", "vote False for", args.CandidateId, "cause this candidate's term:", args.Term, "< current term:", rf.currentTerm)
 		return
 	}
 
@@ -253,6 +267,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			return
 		}
 	}
+	reply.VoteGranted = false
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -276,7 +291,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// }
 	rf.state = follower // If AppendEntries RPC received from new leader: convert to follower
 	rf.resetTimeout()
-	// DPrintln("[Hearbeat]", args.LeaderId, "->", rf.me, "sender term:", args.Term)
+	// DPrintln(rf.me, "[Hearbeat]", args.LeaderId, "->", rf.me, "sender term:", args.Term)
 
 	// 2. Reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm
 	if len(rf.log) <= args.PrevLogIndex || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
@@ -296,12 +311,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		j++
 	}
 	rf.log = append(rf.log, args.Entries[j:]...) // 4. Append any new entries not already in the log
-	DPrintln(rf.me, ": [append log]", "leader:", args.LeaderId, "send term:", args.Term, "append log:", args.Entries[j:], "log len:", len(rf.log))
-	// var logs []Entry
-	// for _, x := range rf.log {
-	// 	logs = append(logs, *x)
-	// }
-	// DPrintln("logs:", logs)
+	var logs []Entry
+	for _, x := range rf.log {
+		logs = append(logs, *x)
+	}
+	DPrintln(rf.me, "[Get AE RPC]", "leader:", args.LeaderId, "send term:", args.Term, "append log:", args.Entries[j:], "all logs", logs)
 
 	// 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 	if args.LeaderCommit > rf.commitIndex {
@@ -392,7 +406,11 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader = rf.state == leader
 	if isLeader {
 		rf.log = append(rf.log, NewEntry(term, command))
-		DPrintln("[start command] leader: ", rf.me, "term:", term, "index:", index)
+		var logs []Entry
+		for _, x := range rf.log {
+			logs = append(logs, *x)
+		}
+		DPrintln(rf.me, "[start command]", "term:", term, "index:", index, "command:", command, "all logs:", logs)
 	}
 	return index, term, isLeader
 }
@@ -436,7 +454,7 @@ func (rf *Raft) ticker() {
 }
 
 func (rf *Raft) startNewElection() {
-	DPrintln("peer", rf.me, "-> candidate", "of term:", rf.currentTerm+1)
+	DPrintln(rf.me, "convert to candidate", "of term:", rf.currentTerm+1)
 	rf.state = candidate
 	rf.currentTerm++           // 1. Increment currentTerm
 	rf.votedFor = rf.me        // 2. Vote for self
@@ -460,24 +478,24 @@ func (rf *Raft) startNewElection() {
 				defer rf.mu.Unlock()
 
 				if rf.state != candidate {
-					DPrintln("state changed to: [", rf.state, "] in vote reply for candidate [", rf.me, "] from ", i, " in term ", voteTerm)
+					DPrintln(rf.me, "candidate state has changed to", rf.state, "when getting vote reply of ", i, " in term ", voteTerm)
 					return
 				}
 				if reply.Term > voteTerm { // discover new term, revert to follower, and need to update currentTerm
-					DPrintln("receive new term: [", reply.Term, "] in vote reply for candidate [", rf.me, "] from ", i, " in term ", voteTerm)
+					DPrintln(rf.me, "candidate receives new term", reply.Term, "from vote reply of ", i, " in term ", voteTerm)
 					rf.convertToFollower(reply.Term)
 					return
 				}
 
 				if reply.VoteGranted {
-					DPrintln("voteGranted:", i, "->", rf.me, "term ", voteTerm)
+					DPrintln(rf.me, "voteGranted:", i, "->", rf.me, "term ", voteTerm)
 					voteCnt++
 					if voteCnt > len(rf.peers)/2 {
-						DPrintln("[voter result]", rf.me, "-> leader of term", voteTerm, "voteCnt:", voteCnt)
+						DPrintln(rf.me, "[vote succeed]", rf.me, "-> leader of term", voteTerm, "voteCnt:", voteCnt)
 						rf.convertToLeader()
 					}
 				} else {
-					DPrintln("voteFailed:", i, "->", rf.me, "term ", voteTerm)
+					DPrintln(rf.me, "voteFailed:", i, "->", rf.me, "term ", voteTerm)
 				}
 			}
 		}(i)
@@ -489,10 +507,12 @@ func (rf *Raft) convertToFollower(term int) {
 	rf.currentTerm = term
 	rf.votedFor = -1
 	rf.resetTimeout()
+	DPrintln(rf.me, "convert to follower of term ", term)
 }
 
 func (rf *Raft) convertToLeader() {
 	rf.state = leader // if votes received from majority of servers: become leader
+	DPrintln(rf.me, "convert to leader of term ", rf.currentTerm)
 
 	go func() {
 		for {
@@ -516,12 +536,12 @@ func (rf *Raft) convertToLeader() {
 					if ok := rf.sendAppendEntries(i, args, reply); ok {
 						rf.mu.Lock()
 						defer rf.mu.Unlock()
-						DPrintln("[AE]", rf.me, "->", i, "term:", rf.currentTerm, "nextIndex:", args.PrevLogIndex+1, "matchIndex:", rf.matchIndex[i], "entry:", args.Entries)
+						DPrintln(rf.me, "[Get AE reply]", "peer:", i, "term:", rf.currentTerm, "nextIndex:", args.PrevLogIndex+1, "matchIndex:", rf.matchIndex[i], "entry:", args.Entries)
 						if rf.state != leader || rf.currentTerm != args.Term {
 							return
 						}
 						if reply.Term > rf.currentTerm {
-							DPrintln("leader get larger term id from AE reply:", rf.me, "<-", i, "leader.term:", rf.currentTerm, "reply.term:", reply.Term)
+							DPrintln(rf.me, "leader get larger term id from AE reply:", rf.me, "<-", i, "leader.term:", rf.currentTerm, "reply.term:", reply.Term)
 							rf.convertToFollower(reply.Term)
 							return
 						}
@@ -529,7 +549,7 @@ func (rf *Raft) convertToLeader() {
 							if reply.Success {
 								rf.nextIndex[i] = args.PrevLogIndex + len(args.Entries) + 1
 								rf.matchIndex[i] = rf.nextIndex[i] - 1
-								DPrintln("[AE reply]", rf.me, "<-", i, "term:", rf.currentTerm, "nextIndex:", rf.nextIndex[i], "matchIndex:", rf.matchIndex[i])
+								DPrintln(rf.me, "[Get AE succeed]", "peer:", i, "term:", rf.currentTerm, "nextIndex:", rf.nextIndex[i], "matchIndex:", rf.matchIndex[i])
 
 								commitedIndex := rf.commitIndex
 								for i := commitedIndex + 1; i < len(rf.log); i++ {
@@ -559,7 +579,7 @@ func (rf *Raft) convertToLeader() {
 								}
 							} else {
 								rf.nextIndex[i]--
-								DPrintln("[AE reply]", rf.me, "->", i, "term:", rf.currentTerm, "nextIndex:", rf.nextIndex[i], "matchIndex:", rf.matchIndex[i])
+								DPrintln(rf.me, "[Get AE failed]", "peer:", i, "term:", rf.currentTerm, "nextIndex:", rf.nextIndex[i], "matchIndex:", rf.matchIndex[i])
 							}
 						}
 					}
