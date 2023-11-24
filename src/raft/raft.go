@@ -277,6 +277,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	reply.Term = rf.currentTerm
 	if args.Term < rf.currentTerm {
 		reply.Success = false // 1. Reply false if term < currentTerm
+		DPrintln(rf.me, "[Get AE RPC]", "reply False for", args.LeaderId, "cause this leader's term:", args.Term, "< current term:", rf.currentTerm)
 		return
 	}
 
@@ -296,6 +297,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// 2. Reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm
 	if len(rf.log) <= args.PrevLogIndex || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
 		reply.Success = false
+		DPrintln(rf.me, "[Get AE RPC]", "reply False for", args.LeaderId, "cause this leader's log doesn't match at prev index:", args.PrevLogIndex, "prev term:", args.PrevLogTerm)
 		return
 	}
 	reply.Success = true
@@ -533,7 +535,10 @@ func (rf *Raft) convertToLeader() {
 				rf.mu.Unlock()
 				reply := &AppendEntriesReply{}
 				go func(i int) {
+					t1 := time.Now()
 					if ok := rf.sendAppendEntries(i, args, reply); ok {
+						d := time.Since(t1)
+						DPrintln("AE time duration:", d, "peer:", i)
 						rf.mu.Lock()
 						defer rf.mu.Unlock()
 						DPrintln(rf.me, "[Get AE reply]", "peer:", i, "term:", rf.currentTerm, "nextIndex:", args.PrevLogIndex+1, "matchIndex:", rf.matchIndex[i], "entry:", args.Entries)
@@ -574,7 +579,7 @@ func (rf *Raft) convertToLeader() {
 											Command:      rf.log[rf.lastApplied].Command,
 											CommandIndex: rf.lastApplied,
 										}
-										// DPrintln(rf.me, ": [apply new commit]", "term:", rf.currentTerm, "commitIndex:", rf.commitIndex, "command:", rf.log[rf.lastApplied].Command)
+										DPrintln(rf.me, ": [apply new commit]", "term:", rf.currentTerm, "commitIndex:", rf.commitIndex, "command:", rf.log[rf.lastApplied].Command)
 									}
 								}
 							} else {
@@ -585,7 +590,7 @@ func (rf *Raft) convertToLeader() {
 					}
 				}(i)
 			}
-			time.Sleep(time.Millisecond * 250)
+			time.Sleep(time.Millisecond * 50)
 			rf.mu.Lock()
 			if rf.state != leader {
 				rf.mu.Unlock()
@@ -638,8 +643,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.state = follower
 	rf.votedFor = -1                          // indicate null
 	rf.log = append(rf.log, NewEntry(0, nil)) // append placeholder, the first valid log index is 1
-	rf.lowBoundTimeout = 1000000 * 400
-	rf.upBoundTimeout = 1000000 * 800
+	rf.lowBoundTimeout = 1000000 * 150
+	rf.upBoundTimeout = 1000000 * 300
 	rf.resetTimeout()
 
 	// initialize from state persisted before a crash
