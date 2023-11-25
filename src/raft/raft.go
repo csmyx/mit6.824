@@ -157,6 +157,7 @@ func (rf *Raft) persist() {
 	e.Encode(rf.log)
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
+	// DPrintln(rf.me, "persisteser:", rf.currentTerm, rf.votedFor, rf.log)
 }
 
 //
@@ -197,6 +198,7 @@ func (rf *Raft) readPersist(data []byte) {
 		rf.currentTerm = currentTerm
 		rf.votedFor = votedFor
 		rf.log = log
+		DPrintln(rf.me, "read persisteser:", rf.currentTerm, rf.votedFor, rf.log)
 	}
 }
 
@@ -263,11 +265,11 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	DPrintln(rf.me, "[Get RV RPC]", "current votefor:", rf.votedFor, "curterm:", rf.currentTerm,
+	DPrintln(rf.me, "[Get RV RPC]", "from candidate", args.CandidateId, "current votefor:", rf.votedFor, "curterm:", rf.currentTerm,
 		"lastLogTerm:", rf.log[len(rf.log)-1].Term,
-		"arg.Term:", args.LastLogTerm,
+		"arg.LastLogTerm:", args.LastLogTerm,
 		"lastLogIndex:", len(rf.log)-1,
-		"arg.index:", args.LastLogIndex)
+		"arg.LastLogIndex:", args.LastLogIndex)
 
 	reply.Term = rf.currentTerm
 	if args.Term < rf.currentTerm {
@@ -291,9 +293,14 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			rf.resetTimeout()
 			rf.persist()
 			return
+		} else {
+			reply.VoteGranted = false
+			DPrintln(rf.me, "[Get RV RPC]", "vote False for", args.CandidateId, "cause this candidate's log is not up-to-date")
 		}
+	} else {
+		reply.VoteGranted = false
+		DPrintln(rf.me, "[Get RV RPC]", "vote False for", args.CandidateId, "cause having voted for", rf.votedFor)
 	}
-	reply.VoteGranted = false
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -520,14 +527,14 @@ func (rf *Raft) startNewElection() {
 				}
 
 				if reply.VoteGranted {
-					DPrintln(rf.me, "voteGranted:", i, "->", rf.me, "term ", voteTerm)
+					DPrintln(rf.me, "voteGranted from", i, "in term ", voteTerm)
 					voteCnt++
 					if voteCnt > len(rf.peers)/2 {
-						DPrintln(rf.me, "[vote succeed]", rf.me, "-> leader of term", voteTerm, "voteCnt:", voteCnt)
+						DPrintln(rf.me, "[vote succeed]", rf.me, "become leader of term", voteTerm, "voteCnt:", voteCnt)
 						rf.convertToLeader()
 					}
 				} else {
-					DPrintln(rf.me, "voteFailed:", i, "->", rf.me, "term ", voteTerm)
+					DPrintln(rf.me, "voteFailed from ", i, "in term ", voteTerm)
 				}
 			}
 		}(i)
@@ -567,6 +574,7 @@ func (rf *Raft) convertToLeader() {
 				reply := &AppendEntriesReply{}
 				go func(i int) {
 					// t1 := time.Now()
+					DPrintln(rf.me, "[send AE RPC]", "cur term:", rf.currentTerm)
 					if ok := rf.sendAppendEntries(i, args, reply); ok {
 						// d := time.Since(t1)
 						// DPrintln("AE time duration:", d, "peer:", i)
@@ -610,7 +618,7 @@ func (rf *Raft) convertToLeader() {
 											Command:      rf.log[rf.lastApplied].Command,
 											CommandIndex: rf.lastApplied,
 										}
-										DPrintln(rf.me, ": [apply new commit]", "term:", rf.currentTerm, "commitIndex:", rf.commitIndex, "command:", rf.log[rf.lastApplied].Command)
+										DPrintln(rf.me, ": [apply new commit]", "term:", rf.currentTerm, "commitIndex:", rf.lastApplied, "command:", rf.log[rf.lastApplied].Command)
 									}
 								}
 							} else {
