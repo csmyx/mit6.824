@@ -495,7 +495,7 @@ func (rf *Raft) startNewElection() {
 	args := &RequestVoteArgs{
 		Term:         voteTerm,
 		CandidateId:  rf.me,
-		LastLogIndex: len(rf.log),
+		LastLogIndex: len(rf.log) - 1,
 		LastLogTerm:  rf.log[len(rf.log)-1].Term,
 	}
 	var voteCnt int = 1
