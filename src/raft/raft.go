@@ -20,6 +20,7 @@ package raft
 import (
 	//	"bytes"
 
+	"bytes"
 	"log"
 	"math/rand"
 	"sync"
@@ -27,6 +28,7 @@ import (
 	"time"
 
 	//	"6.824/labgob"
+	"6.824/labgob"
 	"6.824/labrpc"
 )
 
@@ -148,6 +150,13 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// data := w.Bytes()
 	// rf.persister.SaveRaftState(data)
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.log)
+	data := w.Bytes()
+	rf.persister.SaveRaftState(data)
 }
 
 //
@@ -170,6 +179,25 @@ func (rf *Raft) readPersist(data []byte) {
 	//   rf.xxx = xxx
 	//   rf.yyy = yyy
 	// }
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var currentTerm int
+	var votedFor int
+	var log []*Entry
+	if err := d.Decode(&currentTerm); err != nil {
+		DPrintln("error in readPersist decoding currentTerm:", err)
+		return
+	} else if err = d.Decode(&votedFor); err != nil {
+		DPrintln("error in readPersist decoding votedFor:", err)
+		return
+	} else if err = d.Decode(&log); err != nil {
+		DPrintln("error in readPersist decoding log:", err)
+		return
+	} else {
+		rf.currentTerm = currentTerm
+		rf.votedFor = votedFor
+		rf.log = log
+	}
 }
 
 //
@@ -254,6 +282,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.state = follower
 		rf.votedFor = -1
 		rf.resetTimeout()
+		rf.persist()
 	}
 
 	// 2. If votedFor is null or candidateId, and candidate's log is at least as up-to-date as receiver’s log, grant vote
@@ -264,6 +293,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			reply.VoteGranted = true
 			rf.votedFor = args.CandidateId
 			rf.resetTimeout()
+			rf.persist()
 			return
 		}
 	}
@@ -285,6 +315,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
 		rf.votedFor = -1
+		rf.persist()
 	}
 
 	// if rf.state == candidate {
@@ -313,6 +344,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		j++
 	}
 	rf.log = append(rf.log, args.Entries[j:]...) // 4. Append any new entries not already in the log
+	rf.persist()
 	var logs []Entry
 	for _, x := range rf.log {
 		logs = append(logs, *x)
@@ -408,6 +440,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader = rf.state == leader
 	if isLeader {
 		rf.log = append(rf.log, NewEntry(term, command))
+		rf.persist()
 		var logs []Entry
 		for _, x := range rf.log {
 			logs = append(logs, *x)
@@ -458,9 +491,10 @@ func (rf *Raft) ticker() {
 func (rf *Raft) startNewElection() {
 	DPrintln(rf.me, "convert to candidate", "of term:", rf.currentTerm+1)
 	rf.state = candidate
-	rf.currentTerm++           // 1. Increment currentTerm
-	rf.votedFor = rf.me        // 2. Vote for self
-	rf.resetTimeout()          // 3. Reset election timer
+	rf.currentTerm++    // 1. Increment currentTerm
+	rf.votedFor = rf.me // 2. Vote for self
+	rf.resetTimeout()   // 3. Reset election timer
+	rf.persist()
 	voteTerm := rf.currentTerm // record the Term before all sendRequestVoteRPCs
 	args := &RequestVoteArgs{
 		Term:         voteTerm,
@@ -509,6 +543,7 @@ func (rf *Raft) convertToFollower(term int) {
 	rf.currentTerm = term
 	rf.votedFor = -1
 	rf.resetTimeout()
+	rf.persist()
 	DPrintln(rf.me, "convert to follower of term ", term)
 }
 
@@ -535,10 +570,10 @@ func (rf *Raft) convertToLeader() {
 				rf.mu.Unlock()
 				reply := &AppendEntriesReply{}
 				go func(i int) {
-					t1 := time.Now()
+					// t1 := time.Now()
 					if ok := rf.sendAppendEntries(i, args, reply); ok {
-						d := time.Since(t1)
-						DPrintln("AE time duration:", d, "peer:", i)
+						// d := time.Since(t1)
+						// DPrintln("AE time duration:", d, "peer:", i)
 						rf.mu.Lock()
 						defer rf.mu.Unlock()
 						DPrintln(rf.me, "[Get AE reply]", "peer:", i, "term:", rf.currentTerm, "nextIndex:", args.PrevLogIndex+1, "matchIndex:", rf.matchIndex[i], "entry:", args.Entries)
