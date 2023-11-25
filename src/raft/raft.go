@@ -278,11 +278,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	// If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower
 	if args.Term > rf.currentTerm {
-		rf.currentTerm = args.Term
-		rf.state = follower
-		rf.votedFor = -1
-		rf.resetTimeout()
-		rf.persist()
+		rf.convertToFollower(args.Term)
 	}
 
 	// 2. If votedFor is null or candidateId, and candidate's log is at least as up-to-date as receiver’s log, grant vote
