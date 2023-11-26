@@ -631,7 +631,7 @@ func (rf *Raft) convertToLeader() {
 			}
 			time.Sleep(time.Millisecond * 50)
 			rf.mu.Lock()
-			if rf.state != leader {
+			if rf.killed() || rf.state != leader {
 				rf.mu.Unlock()
 				return
 			}
