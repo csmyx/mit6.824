@@ -109,7 +109,7 @@ func (st State) String() string {
 	case leader:
 		return "Leader"
 	default:
-		return "unknown"
+		return "Unknown"
 	}
 }
 
@@ -219,7 +219,27 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 // that index. Raft should now trim its log as much as possible.
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	// rf.trimLog(index)
+	// DPrintln(rf.me, "[Snapshot]", "index:", index, "snapshot:", snapshot)
+	// w := new(bytes.Buffer)
+	// e := labgob.NewEncoder(w)
+	// e.Encode(rf.currentTerm)
+	// e.Encode(rf.votedFor)
+	// e.Encode(rf.log)
+	// data := w.Bytes()
+	// rf.persister.SaveStateAndSnapshot(data, snapshot)
+}
 
+// trim all log through(and including) index
+func (rf *Raft) trimLog(index int) {
+	index++
+	if index > len(rf.log) {
+		index = len(rf.log)
+	}
+	rf.log = rf.log[index:]
+	rf.persist()
 }
 
 //
@@ -347,6 +367,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		j++
 	}
 	rf.log = append(rf.log, args.Entries[j:]...) // 4. Append any new entries not already in the log
+	// if j > 0 {
+	// 	// fmt.Printf("address: &rf.log:%p, rf.log:%p, []rf.log:%v, &args.Entris:%p, args.Entris:%p, args.Entris[j:]:%p, j:%d\n", &rf.log, rf.log, rf.log, &args.Entries, args.Entries, args.Entries[j:], j)
+	// }
 	rf.persist()
 	var logs []Entry
 	for _, x := range rf.log {
@@ -448,7 +471,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		for _, x := range rf.log {
 			logs = append(logs, *x)
 		}
-		DPrintln(rf.me, "[start command]", "term:", term, "index:", index, "command:", command, "all logs:", logs)
+		DPrintln(rf.me, "[start command]", "term:", term, "index:", index, "command:", command) //, "all logs:", logs)
 	}
 	return index, term, isLeader
 }
@@ -560,24 +583,23 @@ func (rf *Raft) convertToLeader() {
 				if i == rf.me {
 					continue
 				}
-				rf.mu.Lock()
-				nextIndex := rf.nextIndex[i]
-				args := &AppendEntriesArgs{
-					Term:         rf.currentTerm,
-					LeaderId:     rf.me,
-					PrevLogIndex: nextIndex - 1,
-					PrevLogTerm:  rf.log[nextIndex-1].Term,
-					Entries:      rf.log[nextIndex:],
-					LeaderCommit: rf.commitIndex,
-				}
-				rf.mu.Unlock()
-				reply := &AppendEntriesReply{}
 				go func(i int) {
-					// t1 := time.Now()
-					DPrintln(rf.me, "[send AE RPC]", "cur term:", rf.currentTerm)
+					rf.mu.Lock()
+					nextIndex := rf.nextIndex[i]
+					// var *entries []*Entry
+					// copy(entries, rf.log[nextIndex:])
+					args := &AppendEntriesArgs{
+						Term:         rf.currentTerm,
+						LeaderId:     rf.me,
+						PrevLogIndex: nextIndex - 1,
+						PrevLogTerm:  rf.log[nextIndex-1].Term,
+						// Entries:      entries,
+						Entries:      rf.log[nextIndex:],
+						LeaderCommit: rf.commitIndex,
+					}
+					rf.mu.Unlock()
+					reply := &AppendEntriesReply{}
 					if ok := rf.sendAppendEntries(i, args, reply); ok {
-						// d := time.Since(t1)
-						// DPrintln("AE time duration:", d, "peer:", i)
 						rf.mu.Lock()
 						defer rf.mu.Unlock()
 						DPrintln(rf.me, "[Get AE reply]", "peer:", i, "term:", rf.currentTerm, "nextIndex:", args.PrevLogIndex+1, "matchIndex:", rf.matchIndex[i], "entry:", args.Entries)
@@ -593,7 +615,7 @@ func (rf *Raft) convertToLeader() {
 							if reply.Success {
 								rf.nextIndex[i] = args.PrevLogIndex + len(args.Entries) + 1
 								rf.matchIndex[i] = rf.nextIndex[i] - 1
-								DPrintln(rf.me, "[Get AE succeed]", "peer:", i, "term:", rf.currentTerm, "nextIndex:", rf.nextIndex[i], "matchIndex:", rf.matchIndex[i])
+								DPrintln(rf.me, "[AE reply succeed]", "peer:", i, "term:", rf.currentTerm, "nextIndex:", rf.nextIndex[i], "matchIndex:", rf.matchIndex[i])
 
 								commitedIndex := rf.commitIndex
 								for i := commitedIndex + 1; i < len(rf.log); i++ {
@@ -632,6 +654,13 @@ func (rf *Raft) convertToLeader() {
 			time.Sleep(time.Millisecond * 50)
 			rf.mu.Lock()
 			if rf.killed() || rf.state != leader {
+				if rf.killed() {
+					DPrintln("leader", rf.me, "is killed")
+				}
+				if rf.state != leader {
+					DPrintln("leader", rf.me, "is not leader", rf.state)
+				}
+
 				rf.mu.Unlock()
 				return
 			}
