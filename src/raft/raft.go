@@ -392,6 +392,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			Command:      rf.log[rf.lastApplied].Command,
 			CommandIndex: rf.lastApplied,
 		}
+		// unlock when apply commited message to avoid deadlock
 		rf.mu.Unlock()
 		rf.applyCh <- applyMsg
 		rf.mu.Lock()
@@ -645,6 +646,7 @@ func (rf *Raft) convertToLeader() {
 											Command:      rf.log[rf.lastApplied].Command,
 											CommandIndex: rf.lastApplied,
 										}
+										// unlock when apply commited message to avoid deadlock
 										rf.mu.Unlock()
 										rf.applyCh <- applyMsg
 										rf.mu.Lock()
