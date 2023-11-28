@@ -387,12 +387,15 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 	for rf.lastApplied < rf.commitIndex {
 		rf.lastApplied++
-		rf.applyCh <- ApplyMsg{
+		applyMsg := ApplyMsg{
 			CommandValid: true,
 			Command:      rf.log[rf.lastApplied].Command,
 			CommandIndex: rf.lastApplied,
 		}
-		// DPrintln(rf.me, ": [apply new commit]", "term:", rf.currentTerm, "commitIndex:", rf.commitIndex, "command:", rf.log[rf.lastApplied].Command)
+		rf.mu.Unlock()
+		rf.applyCh <- applyMsg
+		rf.mu.Lock()
+		DPrintln(rf.me, ": [follower apply new commit]", "term:", rf.currentTerm, "commitIndex:", rf.commitIndex, "command:", rf.log[rf.lastApplied].Command)
 	}
 }
 
@@ -586,15 +589,17 @@ func (rf *Raft) convertToLeader() {
 				go func(i int) {
 					rf.mu.Lock()
 					nextIndex := rf.nextIndex[i]
-					// var *entries []*Entry
-					// copy(entries, rf.log[nextIndex:])
+
+					// [bugfix] should use a copy of slice of rf.log to avoid data race, because the elems in this slice of rf.log might being overwritten in the AppendEntries() goroutine.
+					// If we just use the slice of rf.log in args directly, then the reading of args later in rf.sendAppendEntrie may cause race condition
+					// with an overwrite happening in AppendEntries() goroutine.
+					entris := append([]*Entry{}, rf.log[nextIndex:]...)
 					args := &AppendEntriesArgs{
 						Term:         rf.currentTerm,
 						LeaderId:     rf.me,
 						PrevLogIndex: nextIndex - 1,
 						PrevLogTerm:  rf.log[nextIndex-1].Term,
-						// Entries:      entries,
-						Entries:      rf.log[nextIndex:],
+						Entries:      entris,
 						LeaderCommit: rf.commitIndex,
 					}
 					rf.mu.Unlock()
@@ -635,12 +640,15 @@ func (rf *Raft) convertToLeader() {
 									rf.commitIndex = commitedIndex
 									for rf.lastApplied < rf.commitIndex {
 										rf.lastApplied++
-										rf.applyCh <- ApplyMsg{
+										applyMsg := ApplyMsg{
 											CommandValid: true,
 											Command:      rf.log[rf.lastApplied].Command,
 											CommandIndex: rf.lastApplied,
 										}
-										DPrintln(rf.me, ": [apply new commit]", "term:", rf.currentTerm, "commitIndex:", rf.lastApplied, "command:", rf.log[rf.lastApplied].Command)
+										rf.mu.Unlock()
+										rf.applyCh <- applyMsg
+										rf.mu.Lock()
+										DPrintln(rf.me, ": [leader apply new commit]", "term:", rf.currentTerm, "commitIndex:", rf.lastApplied, "command:", rf.log[rf.lastApplied].Command)
 									}
 								}
 							} else {
